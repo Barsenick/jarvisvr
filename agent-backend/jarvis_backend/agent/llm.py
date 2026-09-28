@@ -806,10 +806,10 @@ class OllamaLLM(GenericOpenAILLM):
     def build_request(
         self,
         messages: list[LLMMessage],
-        toys: list[ToolSpec],
+        tools: list[ToolSpec],
         images: Optional[list[ImageInput]] = None,
     ) -> dict[str, Any]:
-        log.debug(f"OllamaLLM.build_request: toys={toys}, self._supports_tools={self._supports_tools}")
+        log.debug(f"OllamaLLM.build_request: tools={tools}, self._supports_tools={self._supports_tools}")
         # For Ollama, we always use the /api/chat endpoint
         oai_messages = [_to_openai_message(m) for m in messages]
         
@@ -844,14 +844,14 @@ class OllamaLLM(GenericOpenAILLM):
             "temperature": 0,
             "stream": False,
         }
-        if toys and self._supports_tools:
+        if tools and self._supports_tools:
             log.debug(f"OllamaLLM.build_request: adding tools to request")
             # Note: Ollama may not support tools in the same way as OpenAI
             # For now, we'll pass them through but this may need adjustment
-            body["tools"] = _openai_tools_payload(toys)
+            body["tools"] = _openai_tools_payload(tools)
             body["tool_choice"] = "auto"
         else:
-            log.debug(f"OllamaLLM.build_request: not adding toys")
+            log.debug(f"OllamaLLM.build_request: not adding tools")
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
@@ -860,6 +860,73 @@ class OllamaLLM(GenericOpenAILLM):
             "headers": headers,
             "json": body,
         }
+
+    async def complete(
+        self,
+        messages: list[LLMMessage],
+        tools: list[ToolSpec],
+        *,
+        images: Optional[list[ImageInput]] = None,
+    ) -> LLMResult:
+        req = self.build_request(messages, tools, images)
+        print(f"[DEBUG] OllamaLLM request: {req}")
+        import time
+        import json
+        
+        try:
+            start_time = time.time()
+            async with httpx.AsyncClient(timeout=httpx.Timeout(self._timeout, connect=10.0)) as client:
+                async with client.stream(
+                    "POST", req["url"], headers=req["headers"], json=req["json"]
+                ) as resp:
+                    resp.raise_for_status()
+                    # Accumulate content from streaming response
+                    full_content = ""
+                    async for line in resp.aiter_lines():
+                        if line.strip():  # Skip empty lines
+                            try:
+                                data = json.loads(line)
+                                # Extract content from Ollama's streaming response format
+                                if "message" in data and "content" in data["message"]:
+                                    full_content += data["message"]["content"]
+                                # Break when done
+                                if data.get("done", False):
+                                    break
+                            except json.JSONDecodeError:
+                                # Skip lines that aren't valid JSON
+                                continue
+            end_time = time.time()
+            print(f"[DEBUG] OllamaLLM request took {end_time - start_time:.2f} seconds")
+            
+            # Create a mock response object for parse_response
+            data = {
+                "choices": [{
+                    "message": {
+                        "content": full_content
+                    }
+                }]
+            }
+            return self.parse_response(data)
+        except httpx.TimeoutException:
+            log.error("Ollama request timed out after %ss", self._timeout)
+            print(f"[ERROR] Ollama request timed out after {self._timeout}s")
+            raise LLMUnavailable("Model took too long to respond")
+        except Exception as exc:
+            # Try to get more details from the response
+            if hasattr(exc, 'response') and exc.response is not None:
+                try:
+                    error_details = exc.response.text
+                    log.error(f"Error calling Ollama: {exc}")
+                    log.error(f"Ollama error response: {error_details}")
+                    print(f"[ERROR] Error calling Ollama: {exc}")
+                    print(f"[ERROR] Ollama error response: {error_details}")
+                except:
+                    log.exception("Error calling Ollama")
+                    print(f"[ERROR] Error calling Ollama: {exc}")
+            else:
+                log.exception("Error calling Ollama")
+                print(f"[ERROR] Error calling Ollama: {exc}")
+            raise LLMUnavailable(f"Request failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
