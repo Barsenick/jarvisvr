@@ -157,9 +157,9 @@ _PROVIDERS: list[ProviderInfo] = [
     ),
     ProviderInfo(
         id="ollama", display_name="Ollama (local)", kind=KIND_OPENAI_COMPATIBLE,
-        default_models=["llama3.2", "qwen2.5", "mistral"], env_var=None,
+        default_models=["qwen3-vl:8b", "llama3.2", "qwen2.5", "mistral"], env_var=None,
         needs_base_url=True, default_base_url="http://localhost:11434/v1",
-        litellm_prefix="ollama/", notes="Local; usually no API key.",
+        litellm_prefix="ollama/", supports_vision=True, notes="Local; usually no API key.",
     ),
     ProviderInfo(
         id="lmstudio", display_name="LM Studio (local)", kind=KIND_OPENAI_COMPATIBLE,

@@ -288,6 +288,8 @@ class AgentSession:
     async def handle_user_text(
         self, text: str, *, echo: bool = True, attach_perception: Optional[bool] = None
     ) -> None:
+        print("DEBUG: handle_user_text called with text: %s", text[:100] if text else '')
+        log.info("handle_user_text called with text: %s", text[:100] if text else '')
         text = (text or "").strip()
         if not text:
             return
@@ -298,16 +300,45 @@ class AgentSession:
         if self.config.perception_enabled and await self._maybe_perception_control(text):
             return
 
+        print("DEBUG: Past perception control, about to check orchestration_enabled")
+        log.info("DEBUG: Past perception control, about to check orchestration_enabled")
+        print(f"DEBUG: self.config.orchestration_enabled = {self.config.orchestration_enabled}")
+        log.info("DEBUG: self.config.orchestration_enabled = %s", self.config.orchestration_enabled)
+
         # v1.2: route the turn through the multi-agent orchestrator (default on).
         # A trivial goal yields a 1-agent plan, preserving the single-turn UX.
         if self.config.orchestration_enabled:
-            await self.orchestrator.run(text, attach_perception=attach_perception)
+            print("!!! ENTERING ORCHESTRATOR BLOCK !!!")
+            log.info("!!! ENTERING ORCHESTRATOR BLOCK !!!")
+            print("DEBUG: Orchestration enabled, about to call orchestrator.run")
+            log.info("About to call orchestrator.run")
+            print(f"DEBUG: self.orchestrator is {self.orchestrator}")
+            log.info("DEBUG: self.orchestrator is %s", self.orchestrator)
+            if self.orchestrator is None:
+                log.error("ORCHESTRATOR IS NONE!")
+                print("ERROR: ORCHESTRATOR IS NONE!")
+            else:
+                print(f"DEBUG: Orchestrator is {type(self.orchestrator)}")
+                log.info("DEBUG: Orchestrator is %s", type(self.orchestrator))
+                try:
+                    print("DEBUG: About to await self.orchestrator.run()")
+                    log.info("About to await self.orchestrator.run()")
+                    await self.orchestrator.run(text, attach_perception=attach_perception)
+                    print("DEBUG: orchestrator.run completed successfully")
+                    log.info("orchestrator.run completed")
+                except BaseException as exc:
+                    print(f"DEBUG: BaseException in orchestrator.run: {exc}")
+                    log.exception("BaseException in orchestrator.run")
+                    raise
+                    print(f"ERROR in orchestrator.run: {exc}")
+                    raise
             return
 
         memory = self.state.memory
         memory.add_user(text)
 
         attach = self._resolve_attach(text, attach_perception)
+        log.info("_resolve_attach returned: %s", attach)
         started_vision = False
         if attach:
             # Turn the camera on for this turn (PROTOCOL §8.6: start … stop),
@@ -453,6 +484,10 @@ class AgentSession:
         self.state.perception.add_audio_scene(payload)
 
     async def _maybe_perception_control(self, text: str) -> bool:
+        log.info("_maybe_perception_control called with text: %r", text)
+        start_match = _WATCH_START.search(text)
+        stop_match = _WATCH_STOP.search(text)
+        log.info("_maybe_perception_control: start_match=%s, stop_match=%s", start_match is not None, stop_match is not None)
         if _WATCH_START.search(text):
             self.state.perception.vision_active = True
             self.state.perception.watching = True  # continuous mode (no per-turn stop)
@@ -474,13 +509,21 @@ class AgentSession:
         return False
 
     def _resolve_attach(self, text: str, attach_perception: Optional[bool]) -> bool:
+        log.info("_resolve_attach called: text=%r, attach_perception=%s, perception_enabled=%s, vision_active=%s", 
+                 text[:50] if text else None, attach_perception, self.config.perception_enabled, self.state.perception.vision_active)
         if not self.config.perception_enabled:
             return False
         if attach_perception is not None:
             return bool(attach_perception)
         if self.state.perception.vision_active:
             return True
-        return bool(_PERCEPTION_HINT.search(text))
+        # If there is a vision frame attached, consider it attached.
+        cd = self.state.perception.current_context()
+        if cd["has_vision"]:
+            return True
+        result = bool(_PERCEPTION_HINT.search(text))
+        log.info("_resolve_attach returning: %s (matched hint: %s)", result, _PERCEPTION_HINT.search(text) is not None)
+        return result
 
     async def _begin_perception_for_turn(self) -> bool:
         """Turn the camera on for a one-shot perception turn (PROTOCOL §8.6).
@@ -489,6 +532,7 @@ class AgentSession:
         stops it again afterwards). In continuous "watch the room" mode the camera
         is already streaming, so we leave it on and return ``False``.
         """
+        log.info("_begin_perception_for_turn called: watching=%s", self.state.perception.watching)
         if self.state.perception.watching:
             return False
         await self._emit_perception_request(
@@ -548,8 +592,9 @@ class AgentSession:
         return "\n".join(lines)
 
     def _perception_images(self) -> Optional[list[ImageInput]]:
-        # Only real providers consume raw pixels; the mock "sees" via tools.
-        if self.llm.name not in ("openai", "anthropic"):
+        # Only providers with vision support consume raw pixels; the mock "sees" via tools
+        # despite having supports_vision=True.
+        if not self.llm.supports_vision or self.llm.name == "mock":
             return None
         imgs = self.state.perception.images_for_llm(1)
         if not imgs:

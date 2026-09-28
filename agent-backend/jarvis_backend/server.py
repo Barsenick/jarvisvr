@@ -151,7 +151,9 @@ class Connection:
             log.warning("incompatible protocol version %r (we are %s)", env.v, protocol.PROTOCOL_VERSION)
 
         t = env.type
+        log.info("Received message type: %s", t)
         MT = protocol.MsgType
+        log.info("MT.USER_TEXT: %s, MT.USER_VOICE_TRANSCRIPT: %s", MT.USER_TEXT, MT.USER_VOICE_TRANSCRIPT)
 
         if t == MT.CLIENT_HELLO:
             await self._on_hello(env)
@@ -160,6 +162,7 @@ class Connection:
         elif t == MT.CLIENT_BYE:
             await self.close()
         elif t in (MT.USER_TEXT, MT.USER_VOICE_TRANSCRIPT):
+            log.info("Received user text message: %s", t)
             self._spawn(self._on_user_text(env))
         elif t == MT.USER_VOICE_PARTIAL:
             pass  # interim transcripts are ignored (final transcript drives the agent)
@@ -175,6 +178,7 @@ class Connection:
         # --- v1.1 perception (§8.3). Quiet, frequent streams update the buffer
         # inline; ones that may produce output run as guarded tasks. ---
         elif t == MT.PERCEPTION_VISION_FRAME:
+            log.info("Received perception.vision_frame: %s", env.payload.get('frame_id', 'unknown'))
             self.ensure_session().ingest_vision_frame(env.payload)
         elif t == MT.PERCEPTION_GAZE:
             self.ensure_session().ingest_gaze(env.payload)
@@ -244,21 +248,26 @@ class Connection:
         )
 
     async def _on_user_text(self, env: protocol.Envelope) -> None:
+        log.info("_on_user_text called")
         session = self.ensure_session()
         try:
             payload = protocol.UserText.model_validate(env.payload)
+            log.info("UserText payload validated: %s", payload.text[:50] if payload.text else '')
         except Exception as exc:  # noqa: BLE001
             await self.emit(
                 protocol.MsgType.SERVER_ERROR,
                 protocol.ErrorPayload(code=protocol.ErrorCode.BAD_ENVELOPE, message=str(exc)),
             )
             return
+        log.info("About to acquire agent lock")
         async with self._agent_lock:
+            log.info("About to call session.run_turn")
             await session.run_turn(
                 session.handle_user_text(
                     payload.text, attach_perception=payload.attach_perception
                 )
             )
+            log.info("session.run_turn completed")
 
     async def _on_interaction(self, env: protocol.Envelope) -> None:
         session = self.ensure_session()
@@ -503,7 +512,7 @@ async def start_server(config: Config, agent: Optional[Agent] = None):
         config.port,
         ping_interval=20,
         ping_timeout=20,
-        max_size=2**20,
+        max_size=20 * 1024 * 1024,
     )
     return server, agent
 
@@ -526,4 +535,23 @@ async def run_server(config: Config) -> None:
         await server.wait_closed()
 
 
-__all__ = ["Connection", "start_server", "run_server"]
+if __name__ == "__main__":
+    import asyncio
+    from .config import Config
+
+    async def main():
+        config = Config.from_env()
+        # Force Ollama for testing to bypass environment variable issues
+        config.llm_provider = "ollama"
+        config.vision_provider = "ollama"
+        config.llm_model = "qwen3-vl:8b"
+        config.llm_base_url = "http://localhost:11434/v1"
+        await run_server(config)
+
+    try:
+        # Set logging to INFO to see the "listening on..." message
+        logging.basicConfig(level=logging.INFO)
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
+

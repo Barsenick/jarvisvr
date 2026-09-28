@@ -1,15 +1,7 @@
-"""Vision, OCR/translate, spatial-memory, and sound tools (v1.1 perception).
-
-All are mock-friendly and fully offline: they read the session's
-:class:`PerceptionBuffer` and synthesize deterministic results via
-:mod:`jarvis_backend.perception.vision`. Each vision tool returns a
-``data["observation"]`` ``{text, annotations}`` block (the agent turns it into an
-``agent.observation`` message) plus holo directives (``vision_annotation`` etc.).
-"""
-
 from __future__ import annotations
 
 import math
+import json
 from typing import Any, Optional
 
 from ...perception.vision import (
@@ -20,10 +12,10 @@ from ...perception.vision import (
     scene_objects,
 )
 from .base import SpawnDirective, ToolContext, ToolRegistry, ToolResult
-
+from jarvis_backend.agent.spatial_memory import spatial_db
+from jarvis_backend.agent.spatial_projection import project_vision_to_world
 
 _HEAD = [0.0, 1.6, 0.0]
-
 
 def _unit_vector(frm: list[float], to: list[float]) -> list[float]:
     v = [to[i] - frm[i] for i in range(3)]
@@ -198,9 +190,21 @@ def _resolve_position(ctx: ToolContext, args: dict[str, Any]) -> tuple[Optional[
     anchor = args.get("anchor", "world")
     if position is None:
         cd = ctx.perception.current_context()
+        # Use spatial projection if we have a room mesh and gaze data
+        head_pose = cd.get("head_pose")
+        gaze_direction = cd.get("gaze", {}).get("direction")
+        surfaces = cd.get("surfaces", [])
+        
+        if head_pose and gaze_direction and surfaces:
+            projected_pos = project_vision_to_world(head_pose, gaze_direction, surfaces)
+            if projected_pos:
+                return projected_pos, "world"
+        
+        # Fallback to simple hit point if available
         gaze = cd.get("gaze") or {}
         if isinstance(gaze.get("hit_point"), list):
             return gaze["hit_point"], "world"
+        
         fo = focus_object(cd)
         if fo and isinstance(fo.get("position"), list):
             return fo["position"], fo.get("anchor", "world")
@@ -210,6 +214,17 @@ def _resolve_position(ctx: ToolContext, args: dict[str, Any]) -> tuple[Optional[
 def _remember_object(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     name = (args.get("name") or "it").strip() or "it"
     position, anchor = _resolve_position(ctx, args)
+    
+    # Save to long-term spatial memory
+    if position:
+        spatial_db.remember(
+            name=name,
+            position=position,
+            anchor=anchor,
+            source="user",
+            timestamp=ctx.session.timestamp if hasattr(ctx.session, 'timestamp') else 0.0
+        )
+        
     if ctx.episodic:
         ctx.episodic.remember_object(name, position=position, anchor=anchor, source="user")
         ctx.episodic.record_event("memory", f"Remembered {name} location.", anchor=anchor)
@@ -231,12 +246,30 @@ def _remember_object(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
 def _find_object(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     name = (args.get("name") or "it").strip() or "it"
-    rec = ctx.episodic.recall_object(name) if ctx.episodic else None
+    
+    # Check long-term spatial memory first
+    rec = spatial_db.recall(name)
+    
+    if not rec:
+        # Fallback to episodic memory
+        if ctx.episodic:
+            rec_dict = ctx.episodic.recall_object(name)
+            if rec_dict:
+                rec = SpatialRecord(
+                    name=rec_dict.get("name", name),
+                    position=rec_dict.get("position"),
+                    anchor=rec_dict.get("anchor", "world"),
+                    source="episodic",
+                    confidence=rec_dict.get("confidence", 0.5),
+                    timestamp=0.0
+                )
+    
     if not rec:
         msg = f"I haven't seen your {name} recently."
         return ToolResult(data={"found": False, "speech": msg, "observation": {"text": msg, "annotations": []}})
-    position = rec.get("position")
-    anchor = rec.get("anchor", "world")
+        
+    position = rec.position
+    anchor = rec.anchor
     directives = []
     annotations = []
     if isinstance(position, list) and len(position) == 3:
@@ -244,7 +277,7 @@ def _find_object(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         directives.append(
             SpawnDirective(
                 widget_type="vision_annotation",
-                props={"label": rec.get("name", name), "detail": "last seen here"},
+                props={"label": rec.name, "detail": "last seen here"},
                 transform=t,
                 interactions=["tap"],
             )
@@ -254,14 +287,14 @@ def _find_object(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             SpawnDirective(
                 widget_type="navigation_arrow",
                 props={
-                    "target_label": rec.get("name", name),
+                    "target_label": rec.name,
                     "direction": _unit_vector(_HEAD, position),
                     "distance_m": round(distance, 2),
                 },
                 interactions=["tap"],
             )
         )
-        annotations.append({"label": rec.get("name", name), "position": t["position"], "anchor": anchor})
+        annotations.append({"label": rec.name, "position": t["position"], "anchor": anchor})
         speech = f"Your {name} should be right here — I've marked the spot."
     else:
         speech = f"I remember your {name}, but I didn't note exactly where."
@@ -398,3 +431,20 @@ def register_perception_tools(reg: ToolRegistry) -> None:
 
 
 __all__ = ["register_perception_tools"]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

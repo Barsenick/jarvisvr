@@ -81,7 +81,12 @@ class Orchestrator:
 
         await self._think("planning", "Decomposing your request…")
 
-        calls, direct = await self._decompose(goal)
+        # Determine if we need to attach perception data
+        attach = session._resolve_attach(goal, attach_perception)
+        # Get perception images if needed
+        images = session._perception_images() if attach else None
+
+        calls, direct = await self._decompose(goal, images=images)
         subtasks = self._build_subtasks(goal, calls)
         session.state.memory.add_user(goal)
 
@@ -89,7 +94,6 @@ class Orchestrator:
         stage_id = f"a{len(subtasks) + 1}" if needs_stage else None
 
         # Turn the camera on once if a perception specialist is involved (§8.6).
-        attach = session._resolve_attach(goal, attach_perception)
         started_vision = False
         if attach and any(st.role == "perception-agent" for st in subtasks):
             started_vision = await session._begin_perception_for_turn()
@@ -134,7 +138,7 @@ class Orchestrator:
     # Decompose + route
     # ------------------------------------------------------------------
 
-    async def _decompose(self, goal: str) -> tuple[list[ToolCall], Optional[str]]:
+    async def _decompose(self, goal: str, images: Optional[list[ImageInput]] = None) -> tuple[list[ToolCall], Optional[str]]:
         available = set(self.session.registry.names())
         if getattr(self.session.llm, "name", "") == "mock":
             return plan_tool_calls(goal, available)
@@ -144,7 +148,7 @@ class Orchestrator:
             LLMMessage(role="user", content=goal),
         ]
         try:
-            result = await self.session.llm.complete(messages, self.session.registry.specs())
+            result = await self.session.llm.complete(messages, self.session.registry.specs(), images=images)
         except Exception as exc:  # noqa: BLE001 - fall back deterministically
             log.warning("LLM decomposition failed (%s); using deterministic planner", exc)
             return plan_tool_calls(goal, available)

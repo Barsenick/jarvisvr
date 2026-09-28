@@ -1,15 +1,19 @@
 """LLM provider abstraction + implementations.
 
-* :class:`LLMProvider` — the interface the agent loop talks to.
-* :class:`MockLLM` — deterministic, keyword/intent-driven planner so the whole
-  stack is demoable offline with no API keys.
-* :class:`OpenAILLM` / :class:`AnthropicLLM` — real function/tool-calling
-  providers (optional deps; selected via ``JARVIS_LLM``).
+This is a *self-contained* implementation of the envelope + payload schemas
+defined in ``docs/PROTOCOL.md``. The ``shared-protocol/`` package will later
+publish canonical Python bindings generated from the JSON Schema; when that
+lands, reconcile this module against it (the file names/shapes here mirror the
+protocol doc exactly, so the swap should be mechanical).
 
-The provider works purely on a list of :class:`LLMMessage` (system/user/assistant/
-tool) and a list of :class:`ToolSpec`, returning an :class:`LLMResult` that is
-either tool calls to execute or final assistant text. This single abstraction is
-what lets the mock and the real providers share the exact same agent loop.
+Design notes
+------------
+* ``Envelope`` keeps ``payload`` as a free-form dict. Typed payload models below
+  are used to *build* and *validate* specific message types, but the transport
+  layer never rejects a message just because its payload has extra keys
+  (forward-compatibility, per the protocol's conformance checklist).
+* All payload models ignore unknown keys (``extra="ignore"``).
+* Helpers assign a uuid-v4 ``id`` and epoch-millisecond ``ts`` automatically.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ import httpx
 from .. import protocol
 
 log = logging.getLogger("jarvis.llm")
+log.setLevel(logging.DEBUG)
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +106,6 @@ _KNOWN_CITIES = {
     "london": "London",
     "paris": "Paris",
     "new york": "New York",
-    "san francisco": "San Francisco",
     "seattle": "Seattle",
     "berlin": "Berlin",
     "sydney": "Sydney",
@@ -208,7 +212,56 @@ def extract_object_name(text: str) -> str:
         r"where did i (?:leave|put|place)\s+(?:my |the |your )?([a-z][a-z ]*?)(?:\?|$| again| earlier)",
         r"where(?:'s| is| are)\s+(?:my |the |your )?([a-z][a-z ]*?)(?:\?|$)",
         r"have you seen\s+(?:my |the |your )?([a-z][a-z ]*?)(?:\?|$)",
-        r"find\s+(?:my |the |your )?([a-z][a-z ]*?)(?:\?|$)",
+        r"remember (?:that |where )?(?:my |the |your )?([a-z][a-z ]*?)\s+(?:is|are|'s)\b",
+        r"(?:this|that) is (?:my |the )?([a-z][a-z ]*?)(?:\?|$|,| —| -)",
+    ]
+    for p in patterns:
+        m = re.search(p, low)
+        if m:
+            return _clean(m.group(1)) or "it"
+    return "it"
+
+
+def extract_search_query(text: str) -> str:
+    m = re.search(r"\b(?:search the web for|search for|search|look up|google)\s+(.+)", text, re.I)
+    return _clean(m.group(1)) if m else ""
+
+
+def extract_destination(text: str) -> str:
+    m = re.search(
+        r"\b(?:navigate to|directions to|take me to|how do i get to|guide me to|route to)\s+(.+)",
+        text,
+        re.I,
+    )
+    return _clean(m.group(1)) if m else ""
+
+
+def extract_symbols(text: str) -> list[str]:
+    syms = re.findall(r"\b([A-Z]{2,5})\b", text)
+    syms = [s for s in syms if s not in {"USD", "AI", "VR", "CEO", "ID"}]
+    if syms:
+        return syms
+    low = text.lower()
+    found = [tk for name, tk in _COMPANY_TICKERS.items() if name in low]
+    return found or ["AAPL", "TSLA", "NVDA"]
+
+
+def _clean(s: str) -> str:
+    return s.strip(" .,!?'\"-")
+
+
+def extract_target_lang(text: str) -> str:
+    m = re.search(rf"\b(?:to|into|in)\s+({_LANGS})\b", text, re.I)
+    return m.group(1).lower() if m else "spanish"
+
+
+def extract_object_name(text: str) -> str:
+    """Pull the object name from find/remember requests, e.g. 'my keys'."""
+    low = text.lower()
+    patterns = [
+        r"where did i (?:leave|put|place)\s+(?:my |the |your )?([a-z][a-z ]*?)(?:\?|$| again| earlier)",
+        r"where(?:'s| is| are)\s+(?:my |the |your )?([a-z][a-z ]*?)(?:\?|$)",
+        r"have you seen\s+(?:my |the |your )?([a-z][a-z ]*?)(?:\?|$)",
         r"remember (?:that |where )?(?:my |the |your )?([a-z][a-z ]*?)\s+(?:is|are|'s)\b",
         r"(?:this|that) is (?:my |the )?([a-z][a-z ]*?)(?:\?|$|,| —| -)",
     ]
@@ -262,7 +315,7 @@ def _plan_perception(text: str, low: str, want, calls: list[ToolCall]) -> None:
         low,
     ):
         calls.append(_new_call("describe_view", {}))
-
+ 
     # OCR read (avoid clashing with note listing).
     if (
         want("read_text")
@@ -270,7 +323,7 @@ def _plan_perception(text: str, low: str, want, calls: list[ToolCall]) -> None:
         and not re.search(r"\bnotes?\b", low)
     ):
         calls.append(_new_call("read_text", {}))
-
+ 
     # Translate (view vs free text).
     if re.search(r"\btranslate\b", low) and (want("translate_view") or want("translate_text")):
         target = extract_target_lang(low)
@@ -288,7 +341,7 @@ def _plan_perception(text: str, low: str, want, calls: list[ToolCall]) -> None:
                 calls.append(_new_call("translate_text", {"text": phrase, "target_lang": target}))
             elif want("translate_view"):
                 calls.append(_new_call("translate_view", {"target_lang": target}))
-
+ 
     # Spatial memory: remember vs find.
     if (
         want("remember_object")
@@ -302,67 +355,67 @@ def _plan_perception(text: str, low: str, want, calls: list[ToolCall]) -> None:
         low,
     ):
         calls.append(_new_call("find_object", {"name": extract_object_name(text)}))
-
+ 
     # Sound events.
     if want("identify_sound") and re.search(
         r"\bwhat was that (?:sound|noise)\b|\bdid you hear that\b|\bwhat(?:'s| is) that (?:sound|noise)\b",
         low,
     ):
         calls.append(_new_call("identify_sound", {}))
-
+ 
     # Web search / knowledge.
     if want("web_search") and re.search(r"\b(search the web|search for|search|look up|google)\b", low):
         q = extract_search_query(text)
         if q:
             calls.append(_new_call("web_search", {"query": q}))
-
+ 
     if want("get_news") and re.search(r"\b(news|headlines)\b", low):
         m = re.search(r"\bnews (?:about|on|for)\s+(.+)", low)
         calls.append(_new_call("get_news", {"topic": _clean(m.group(1)) if m else ""}))
-
+ 
     if want("get_stocks") and re.search(r"\bstock(?:s| price| quote)?\b|\bshare price\b|\bticker\b", low):
         calls.append(_new_call("get_stocks", {"symbols": extract_symbols(text)}))
-
+ 
     if want("get_calendar") and re.search(
         r"\b(calendar|schedule|agenda|my day|appointments?|what'?s on today)\b", low
     ):
         calls.append(_new_call("get_calendar", {}))
-
+ 
     if want("navigate_to") and re.search(
-        r"\b(navigate to|directions to|take me to|how do i get to|guide me to|route to)\b", low
+        r"\b(Navigate to|directions to|take me to|how do i get to|guide me to|route to)\b", low
     ):
         dest = extract_destination(text)
         if dest:
             calls.append(_new_call("navigate_to", {"destination": dest}))
-
+ 
     if want("measure") and re.search(
         r"\b(measure|how far|how wide|how tall|how big|how long is|distance (?:to|between|from))\b", low
     ):
         calls.append(_new_call("measure", {}))
-
-
+ 
+ 
 def plan_tool_calls(text: str, available: set[str]) -> tuple[list[ToolCall], Optional[str]]:
     """Deterministically map user text -> tool calls (the mock 'planner').
-
+ 
     Returns ``(tool_calls, direct_reply)``. If ``tool_calls`` is empty and
     ``direct_reply`` is set, the agent should speak it directly with no tools.
     """
     low = text.lower().strip()
     calls: list[ToolCall] = []
-
+ 
     def want(name: str) -> bool:
         return name in available
-
+ 
     # Greeting / small talk -> speak directly, no tools.
     if re.fullmatch(r"(hi|hello|hey|yo|hiya)[ ,!.]*(jarvis)?[ ,!.]*", low):
         return [], "Hello. Jarvis here — how can I help?"
     if re.search(r"\b(thanks|thank you|cheers)\b", low):
         return [], "You're welcome."
-
+ 
     # Weather
     if want("get_weather") and re.search(r"\bweather|forecast|temperature\b", low):
         calls.append(_new_call("get_weather", {"city": extract_city(text)}))
-
+ 
     # Timer: start vs stop
     if re.search(r"\btimer\b|\bcountdown\b", low) or re.search(
         r"\bset (?:a|an)\b.*\b(minute|second|hour)", low
@@ -376,11 +429,11 @@ def plan_tool_calls(text: str, available: set[str]) -> tuple[list[ToolCall], Opt
                     {"duration_seconds": extract_duration_seconds(text)},
                 )
             )
-
+ 
     # Current time
     if want("get_time") and re.search(r"\bwhat(?:'s| is)? the time\b|\bcurrent time\b|\bwhat time\b", low):
         calls.append(_new_call("get_time", {}))
-
+ 
     # Notes
     if want("list_notes") and re.search(r"\b(list|show|read|what are).{0,12}notes?\b", low):
         calls.append(_new_call("list_notes", {}))
@@ -392,22 +445,22 @@ def plan_tool_calls(text: str, available: set[str]) -> tuple[list[ToolCall], Opt
             flags=re.I,
         ).strip()
         calls.append(_new_call("take_note", {"text": note or text}))
-
+ 
     # Reminders
     if want("set_reminder") and re.search(r"\bremind me\b|\breminder\b", low):
         what = re.sub(r"^.*?\bremind me (?:to|that)?\s*", "", text, flags=re.I).strip()
         calls.append(_new_call("set_reminder", {"text": what or text}))
-
+ 
     # v1.1 perception + knowledge intents (sight, sound, spatial recall, search…).
     _plan_perception(text, low, want, calls)
-
+ 
     # Explicit "open <widget>"
     if want("open_widget"):
         mo = re.search(r"\bopen (?:the |a |an )?([a-z_ ]+?)(?: widget| panel)?$", low)
         if mo and not calls:
             widget = mo.group(1).strip().replace(" ", "_")
             calls.append(_new_call("open_widget", {"widget_type": widget, "props": {}}))
-
+ 
     # Fallback: show a helpful panel echoing the request.
     if not calls:
         if want("show_text"):
@@ -488,7 +541,7 @@ class MockLLM(LLMProvider):
 # ---------------------------------------------------------------------------
 
 
-def _openai_tools_payload(tools: list[ToolSpec]) -> list[dict[str, Any]]:
+def _openai_tools_payload(toys: list[ToolSpec]) -> list[dict[str, Any]]:
     return [
         {
             "type": "function",
@@ -498,7 +551,7 @@ def _openai_tools_payload(tools: list[ToolSpec]) -> list[dict[str, Any]]:
                 "parameters": t.parameters,
             },
         }
-        for t in tools
+        for t in toys
     ]
 
 
@@ -549,7 +602,6 @@ class OpenAILLM(LLMProvider):
     def _get_client(self):
         if self._client is None:
             from openai import AsyncOpenAI
-
             kwargs: dict[str, Any] = {"api_key": self._api_key}
             if self._base_url:
                 kwargs["base_url"] = self._base_url
@@ -572,9 +624,9 @@ class OpenAILLM(LLMProvider):
             "messages": oai_messages,
             "temperature": 0,
         }
-        payload_tools = _openai_tools_payload(tools)
-        if payload_tools:
-            kwargs["tools"] = payload_tools
+        payload_toys = _openai_tools_payload(toys)
+        if payload_toys:
+            kwargs["tools"] = payload_toys
             kwargs["tool_choice"] = "auto"
         resp = await client.chat.completions.create(**kwargs)
         choice = resp.choices[0].message
@@ -621,7 +673,7 @@ class GenericOpenAILLM(LLMProvider):
     def build_request(
         self,
         messages: list[LLMMessage],
-        tools: list[ToolSpec],
+        toys: list[ToolSpec],
         images: Optional[list[ImageInput]] = None,
     ) -> dict[str, Any]:
         oai_messages = [_to_openai_message(m) for m in messages]
@@ -632,8 +684,8 @@ class GenericOpenAILLM(LLMProvider):
             "messages": oai_messages,
             "temperature": 0,
         }
-        if tools and self._supports_tools:
-            body["tools"] = _openai_tools_payload(tools)
+        if toys and self._supports_tools:
+            body["tools"] = _openai_tools_payload(toys)
             body["tool_choice"] = "auto"
         headers = {"Content-Type": "application/json"}
         if self._api_key:
@@ -656,16 +708,158 @@ class GenericOpenAILLM(LLMProvider):
     async def complete(
         self,
         messages: list[LLMMessage],
-        tools: list[ToolSpec],
+        toys: list[ToolSpec],
         *,
         images: Optional[list[ImageInput]] = None,
     ) -> LLMResult:
-        req = self.build_request(messages, tools, images)
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(req["url"], headers=req["headers"], json=req["json"])
-            resp.raise_for_status()
-            data = resp.json()
-        return self.parse_response(data)
+        import time
+        import asyncio
+        import json
+        from urllib import request as urllib_request
+        
+        log.debug(f"GenericOpenAILLM.complete called with images: {images is not None}")
+        if images is not None:
+            log.debug(f"Number of images: {len(images)}")
+            if len(images) > 0:
+                log.debug(f"First image b64 length: {len(images[0].b64) if images[0].b64 else 0}")
+        req = self.build_request(messages, toys, images)
+        log.debug(f"GenericOpenAILLM request: {req}")
+        # Log the full json body
+        log.debug(f"GenericOpenAILLM request body: {json.dumps(req['json'], indent=2)}")
+
+        def _fetch():
+            # Convert the json dict to bytes
+            data_bytes = json.dumps(req["json"]).encode('utf-8')
+            # Create a urllib request
+            urllib_req = urllib_request.Request(
+                url=req["url"],
+                data=data_bytes,
+                headers=req["headers"],
+                method='POST'
+            )
+            with urllib_request.urlopen(urllib_req, timeout=self._timeout) as response:
+                full_content = ""
+                for line in response:
+                    line = line.decode('utf-8').strip()
+                    if line:
+                        try:
+                            data = json.loads(line)
+                            if "message" in data and "content" in data["message"]:
+                                full_content += data["message"]["content"]
+                            if data.get("done", False):
+                                break
+                        except json.JSONDecodeError:
+                            # Skip invalid JSON lines
+                            continue
+                return full_content
+
+        try:
+            start_time = time.time()
+            loop = asyncio.get_event_loop()
+            full_content = await loop.run_in_executor(None, _fetch)
+            end_time = time.time()
+            log.debug(f"GenericOpenAILLM request took {end_time - start_time:.2f} seconds")
+            
+            # Create a mock response object for parse_response
+            data = {
+                "choices": [{
+                    "message": {
+                        "content": full_content
+                    }
+                }]
+            }
+            return self.parse_response(data)
+        except Exception as exc:
+            log.exception("Error calling GenericOpenAILLM via synchronous request")
+            log.error(f"Error calling GenericOpenAILLM: {exc}")
+            raise LLMUnavailable(f"Request failed: {exc}")
+
+
+class OllamaLLM(GenericOpenAILLM):
+    """Specialized LLM provider for Ollama vision support.
+    
+    Ollama's vision API uses a different endpoint (/api/chat) and format
+    (images in message['images'] array) compared to standard OpenAI format.
+    """
+
+    def __init__(
+        self,
+        provider_id: str,
+        model: str,
+        api_key: Optional[str],
+        base_url: Optional[str],
+        *,
+        supports_tools: bool = True,  # Ignored, Ollama does not support tools
+        supports_vision: bool = False,
+        timeout: float = 300.0,
+    ):
+        super().__init__(
+            provider_id, model, api_key, base_url,
+            supports_tools=False,   # Ollama does not support tools via the OpenAI API format
+            supports_vision=supports_vision,
+            timeout=timeout
+        )
+        # Override the base URL to remove the /v1 suffix for Ollama's vision endpoint
+        if self._base_url.endswith('/v1'):
+            self._base_url = self._base_url[:-3]  # Remove '/v1'
+
+    def build_request(
+        self,
+        messages: list[LLMMessage],
+        toys: list[ToolSpec],
+        images: Optional[list[ImageInput]] = None,
+    ) -> dict[str, Any]:
+        log.debug(f"OllamaLLM.build_request: toys={toys}, self._supports_tools={self._supports_tools}")
+        # For Ollama, we always use the /api/chat endpoint
+        oai_messages = [_to_openai_message(m) for m in messages]
+        
+        # Handle vision-specific formatting if images are present
+        if images and self.supports_vision:
+            # Use Ollama's vision format: images in message['images'] array
+            # Add images to the last user message (typically where vision requests go)
+            for msg in reversed(oai_messages):
+                if msg.get("role") == "user":
+                    # For Ollama, keep content as string if it was string, 
+                    # or convert to string if it's a list (though this shouldn't happen in our usage)
+                    if isinstance(msg.get("content"), list):
+                        # Extract text from content list
+                        text_parts = []
+                        for part in msg["content"]:
+                            if part.get("type") == "text":
+                                text_parts.append(part.get("text", ""))
+                        msg["content"] = " ".join(text_parts)
+                    # Ensure content is a string
+                    if not isinstance(msg.get("content"), str):
+                        msg["content"] = str(msg.get("content", ""))
+                    
+                    # Add images in Ollama's format as a separate field (base64 strings)
+                    msg["images"] = []
+                    for img in images:
+                        msg["images"].append(img.b64)
+                    break
+        
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": oai_messages,
+            "temperature": 0,
+            "stream": False,
+        }
+        if toys and self._supports_tools:
+            log.debug(f"OllamaLLM.build_request: adding tools to request")
+            # Note: Ollama may not support tools in the same way as OpenAI
+            # For now, we'll pass them through but this may need adjustment
+            body["tools"] = _openai_tools_payload(toys)
+            body["tool_choice"] = "auto"
+        else:
+            log.debug(f"OllamaLLM.build_request: not adding toys")
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        return {
+            "url": f"{self._base_url}/api/chat",  # Ollama's endpoint
+            "headers": headers,
+            "json": body,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -702,7 +896,7 @@ class LiteLLMProvider(LLMProvider):
     async def complete(
         self,
         messages: list[LLMMessage],
-        tools: list[ToolSpec],
+        toys: list[ToolSpec],
         *,
         images: Optional[list[ImageInput]] = None,
     ) -> LLMResult:
@@ -715,8 +909,8 @@ class LiteLLMProvider(LLMProvider):
             "temperature": 0,
             "timeout": self._timeout,
         }
-        if tools and self._supports_tools:
-            kwargs["tools"] = _openai_tools_payload(tools)
+        if toys and self._supports_tools:
+            kwargs["tools"] = _openai_tools_payload(toys)
             kwargs["tool_choice"] = "auto"
         if self._api_key:
             kwargs["api_key"] = self._api_key
@@ -743,6 +937,7 @@ def _to_openai_message(m: LLMMessage) -> dict[str, Any]:
             "tool_calls": [
                 {
                     "id": tc.id,
+                    "tc": tc.id,
                     "type": "function",
                     "function": {
                         "name": tc.name,
@@ -755,7 +950,7 @@ def _to_openai_message(m: LLMMessage) -> dict[str, Any]:
     if m.role == "tool":
         return {
             "role": "tool",
-            "tool_call_id": m.tool_call_id or "",
+            "tool_call_id": m.tool_use_id or "",
             "content": m.content or "",
         }
     return {"role": m.role, "content": m.content or ""}
@@ -802,7 +997,6 @@ class AnthropicLLM(LLMProvider):
     def _get_client(self):
         if self._client is None:
             from anthropic import AsyncAnthropic
-
             kwargs: dict[str, Any] = {"api_key": self._api_key}
             if self._base_url:
                 kwargs["base_url"] = self._base_url
@@ -826,7 +1020,7 @@ class AnthropicLLM(LLMProvider):
                 "description": t.description,
                 "input_schema": t.parameters,
             }
-            for t in tools
+            for t in toys
         ]
         anthropic_messages = _to_anthropic_messages(messages)
         if images:
@@ -883,7 +1077,7 @@ def _to_anthropic_messages(messages: list[LLMMessage]) -> list[dict[str, Any]]:
                     "content": [
                         {
                             "type": "tool_result",
-                            "tool_use_id": m.tool_call_id or "",
+                            "tool_use_id": m.tool_use_id or "",
                             "content": m.content or "",
                         }
                     ],
@@ -928,6 +1122,16 @@ def _build_native(resolved) -> LLMProvider:
     if resolved.kind == P.KIND_NATIVE_ANTHROPIC:
         return AnthropicLLM(resolved.model, resolved.api_key, resolved.base_url)
     if resolved.kind == P.KIND_OPENAI_COMPATIBLE:
+        # Special handling for Ollama which uses a different API endpoint and format
+        if resolved.provider_id == "ollama":
+            return OllamaLLM(
+                resolved.provider_id,
+                resolved.model,
+                resolved.api_key,
+                resolved.base_url,
+                supports_tools=resolved.supports_tools,
+                supports_vision=resolved.supports_vision,
+            )
         if resolved.requires_key and not resolved.api_key:
             raise LLMUnavailable(f"{resolved.env_var} not set")
         return GenericOpenAILLM(
@@ -1007,6 +1211,7 @@ __all__ = [
     "AnthropicLLM",
     "GenericOpenAILLM",
     "LiteLLMProvider",
+    "OllamaLLM",
     "LLMUnavailable",
     "create_llm",
     "extract_city",
