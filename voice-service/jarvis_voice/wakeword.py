@@ -2,9 +2,9 @@
 
 Interface :class:`WakeWordDetector` with three implementations:
 
-* :class:`OpenWakeWord` — preferred, open models (built-in ``hey_jarvis``).
-* :class:`Porcupine`    — Picovoice (built-in ``jarvis`` keyword; needs access key).
-* :class:`EnergyFallback` — dependency-free; approximates wake via speech onset.
+* :class:`OpenWakeWord` вЂ” preferred, open models (built-in ``hey_jarvis``).
+* :class:`Porcupine`    вЂ” Picovoice (built-in ``jarvis`` keyword; needs access key).
+* :class:`EnergyFallback` вЂ” dependency-free; approximates wake via speech onset.
 
 All detectors are *streaming*: feed fixed-size PCM16 frames via :meth:`process`,
 which returns ``True`` on the frame where the wake word is spotted. Real engines
@@ -178,7 +178,7 @@ class Porcupine(WakeWordDetector):
 class EnergyFallback(WakeWordDetector):
     """Dependency-free fallback.
 
-    It cannot recognize the literal word "Jarvis" — instead it fires on a burst
+    It cannot recognize the literal word "Jarvis" вЂ” instead it fires on a burst
     of speech-level energy (``wake_energy_threshold`` sustained for
     ``wake_min_frames`` consecutive frames). This makes the pipeline usable with
     zero models (e.g. push-to-talk-ish / "just start talking"), and is clearly
@@ -194,7 +194,7 @@ class EnergyFallback(WakeWordDetector):
         self._cooldown = 0
         self._cooldown_frames = config.frames_for_ms(1000)
         log.info(
-            "EnergyFallback wake ready (threshold=%.0f, min_frames=%d) — "
+            "EnergyFallback wake ready (threshold=%.0f, min_frames=%d) вЂ” "
             "fires on speech onset, not the literal word.",
             self.threshold,
             self.min_frames,

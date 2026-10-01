@@ -28,7 +28,7 @@ namespace JarvisVR.Tests.EditMode
         public void TearDown()
         {
             if (_persist != null) _persist.ClearLayout();
-            foreach (var go in _toDestroy) if (go != null) Object.DestroyImmediate(go);
+            foreach (var go in _toDestroy) if (go != null) UnityEngine.Object.DestroyImmediate(go);
             _toDestroy.Clear();
             LogAssert.ignoreFailingMessages = false;
         }

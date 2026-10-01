@@ -13,10 +13,12 @@ __pycache__/
 .eggs/
 .venv/
 venv/
+venv311/
 env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.cache
 .coverage
 htmlcov/
 dist/
@@ -61,6 +63,8 @@ Thumbs.db
 
 # ---- Docker / data ----
 *.log
+*.txt
+*.db
 data/
 models/
 *.bin

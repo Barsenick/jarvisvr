@@ -193,12 +193,42 @@ def play_pcm16(
     output_device: Optional[int] = None,
     blocking: bool = True,
 ) -> None:
-    """Play raw PCM16 mono audio through the default (or chosen) output device."""
+    """Play raw PCM16 mono audio through the default (or chosen) output device.
+    Uses a simple nearest-neighbor resampler to avoid scipy division-by-zero.
+    """
     if _sd is None or _np is None:
         raise AudioUnavailable("sounddevice/numpy not installed; cannot play audio")
-    samples = _np.frombuffer(pcm, dtype=_np.int16)
+    
     try:
-        _sd.play(samples, samplerate=sample_rate, device=output_device)
+        device_info = _sd.query_devices(output_device) if output_device is not None else _sd.query_devices(_sd.default_output_device)
+        native_rate = int(device_info['default_samplerate'])
+        log.info("Audio Playback -> Device: %s (Native Rate: %dHz)", device_info, native_rate)
+    except Exception:
+        device_info = "Unknown/Default"
+        native_rate = sample_rate
+        log.info("Audio Playback -> Device: %s", device_info)
+
+    # Convert bytes to numpy array
+    samples = _np.frombuffer(pcm, dtype=_np.int16)
+    
+    if samples.size == 0:
+        log.warning("Playback failed: audio buffer is empty")
+        return
+
+    log.info("Audio buffer size: %d samples", samples.size)
+    
+    # Brute-force resample if rates differ
+    if sample_rate != native_rate:
+        log.info("Resampling audio: %dHz -> %dHz", sample_rate, native_rate)
+        # Nearest-neighbor resampling: simple and crash-proof
+        ratio = native_rate / sample_rate
+        new_len = int(len(samples) * ratio)
+        indices = (_np.arange(new_len) / ratio).astype(_np.int32)
+        indices = _np.clip(indices, 0, len(samples) - 1)
+        samples = samples[indices]
+
+    try:
+        _sd.play(samples, samplerate=native_rate, device=output_device)
         if blocking:
             _sd.wait()
     except Exception as exc:  # pragma: no cover - hardware dependent

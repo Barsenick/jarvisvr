@@ -95,19 +95,19 @@ class PiperTTS(Speaker):
         log.info("PiperTTS ready (model=%s, sr=%d)", config.piper_model, self.sample_rate)
 
     def synthesize(self, text: str) -> bytes:
-        import wave as _wave
-
-        buf = tempfile.SpooledTemporaryFile()
         try:
-            with _wave.open(buf, "wb") as wf:  # type: ignore[arg-type]
-                self._voice.synthesize(text, wf)
-            buf.seek(0)
-            return buf.read()
+            # Piper's synthesize returns a generator of AudioChunk objects
+            audio_chunks = self._voice.synthesize(text)
+            pcm_bytes = b"".join(chunk.audio_int16_bytes for chunk in audio_chunks)
+            
+            if not pcm_bytes:
+                raise RuntimeError("Piper produced no audio data")
+            
+            # The pipeline's play_wav_bytes expects a WAV container, not raw PCM
+            return audio.pcm16_to_wav(pcm_bytes, self.sample_rate)
         except Exception as exc:  # pragma: no cover - runtime guard
             log.warning("piper synthesize failed (%s); emitting silence", exc)
             return audio.pcm16_to_wav(audio.silence(300, self.sample_rate), self.sample_rate)
-        finally:
-            buf.close()
 
 
 # --- pyttsx3 (OS voices, offline) ------------------------------------------

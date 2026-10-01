@@ -19,14 +19,37 @@ import argparse
 import asyncio
 import logging
 import sys
-from typing import List, Optional
+import re
+from typing import List, Optional, Iterable, Generator
+from numpy import frombuffer
 
 from . import __version__, audio, protocol
 from .config import Config
 from .pipeline import PipelineCallbacks, PipelineState, build_pipeline
-from .stt import TranscriptResult
+from .stt import TranscriptResult, create_transcriber
+from .tts import create_speaker
+from .wakeword import create_wakeword
 
 log = logging.getLogger("jarvis_voice")
+
+SENTENCE_END = re.compile(r"[.!?。！？]\s+")
+
+def sentences_from_stream(token_stream: Iterable[str]) -> Generator[str, None, None]:
+    """Buffer LLM tokens into complete sentences to preserve intonation."""
+    buffer = ""
+    for token in token_stream:
+        buffer += token
+        while True:
+            match = SENTENCE_END.search(buffer)
+            if not match:
+                break
+            sentence = buffer[: match.end()].strip()
+            if sentence:
+                yield sentence
+            buffer = buffer[match.end():]
+    tail = buffer.strip()
+    if tail:
+        yield tail
 
 
 def _setup_logging(level: str) -> None:
@@ -121,13 +144,96 @@ def cmd_demo(config: Config, args: argparse.Namespace) -> int:
                 if not line:
                     break
                 result = pipeline.simulate_utterance(line)
-                # Demonstrate the "mouth": acknowledge via TTS.
                 pipeline.speak(f"You said: {result.text}")
         except KeyboardInterrupt:
             print()
     print("bye.")
     return 0
 
+
+def cmd_demo_streaming(config: Config, args: argparse.Namespace) -> int:
+    """Streaming demo: Mic -> STT -> Ollama (Stream) -> Sentence Buffer -> Piper -> Audio."""
+    from .tts import create_speaker
+    import numpy as np
+    import httpx
+    import json
+
+    # 1. Setup the Speaker (for the output)
+    speaker = create_speaker(config)
+    
+    # 2. Define how to handle the result once the Pipeline finishes STT
+    def handle_transcript(result):
+        print(f"  📝 transcript: {result.text!r}")
+        
+        # The Real LLM Stream (Ollama)
+        async def ollama_stream(prompt: str):
+            url = "http://localhost:11434/api/generate"
+            payload = {"model": "gemma4:e2b", "prompt": prompt, "stream": True}
+            try:
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream("POST", url, json=payload) as response:
+                        async for line in response.aiter_lines():
+                            if not line: continue
+                            chunk = json.loads(line)
+                            if "response" in chunk: yield chunk["response"]
+                            if chunk.get("done"): break
+            except Exception as exc:
+                log.error("Ollama stream failed: %s", exc)
+                yield f"Sorry, I had a connection error: {exc}"
+
+        async def run_tts_pipeline():
+            print(f"  🤖 Jarvis: ", end="", flush=True)
+            tokens = []
+            async for token in ollama_stream(result.text):
+                tokens.append(token)
+            
+            full_text = "".join(tokens)
+            # Use the sentence buffer to keep the intonation natural
+            for sentence in sentences_from_stream([full_text]):
+                print(sentence, end="", flush=True)
+                speaker.speak(sentence) 
+            print("\n")
+
+        # Run the async TTS pipeline in the background
+        asyncio.run(run_tts_pipeline())
+
+    # 3. Use the SAME Pipeline logic as cmd_demo
+    callbacks = PipelineCallbacks(
+        on_wake=lambda: print("\n[wake] 👂 listening..."),
+        on_transcript=handle_transcript,
+    )
+    pipeline = build_pipeline(config, callbacks)
+    _banner(config)
+    print("\n[Streaming LLM Demo] Listening for wake word... (Ctrl+C to quit)")
+
+    use_mic = audio.audio_io_available() and not args.simulate
+    if use_mic:
+        from .audio import AudioUnavailable, MicStream
+        try:
+            with MicStream(
+                sample_rate=config.sample_rate,
+                frame_samples=config.samples_per_frame,
+                input_device=config.input_device,
+            ) as mic:
+                pipeline.run(mic) # <--- THIS uses the a-priori working VAD loop
+        except AudioUnavailable as exc:
+            print(f"Mic unavailable: {exc}")
+        except KeyboardInterrupt:
+            print("\nbye.")
+            return 0
+    else:
+        print("\n[simulate] No mic. Type utterance to trigger streaming TTS.")
+        try:
+            while True:
+                line = input("you> ").strip()
+                if not line: break
+                class Result: pass
+                r = Result(); r.text = line
+                handle_transcript(r)
+        except KeyboardInterrupt:
+            pass
+    
+    return 0
 
 # --------------------------------------------------------------------------- #
 # ambient (continuous listening + sound events)
@@ -171,7 +277,6 @@ def cmd_ambient(config: Config, args: argparse.Namespace) -> int:
 
     if not use_mic:
         print("\n[simulate] Generating synthetic room audio (no mic)…\n")
-        # Vary the heuristic labels so the demo shows different sound events.
         try:
             ambient.sounds.set_canned(["doorbell", "music", "speech", "alarm"])
         except Exception:
@@ -179,7 +284,7 @@ def cmd_ambient(config: Config, args: argparse.Namespace) -> int:
         loud = audio.tone(300.0, config.frame_ms, sample_rate=config.sample_rate, amplitude=0.6)
         quiet = audio.silence(config.frame_ms, config.sample_rate)
         wpf = config.frames_for_ms(config.ambient_window_ms)
-        for _ in range(3):  # a few windows of "someone talking, then quiet"
+        for _ in range(3):
             for _ in range(max(1, wpf // 2)):
                 ambient.process_frame(loud)
             for _ in range(wpf - wpf // 2 + 1):
@@ -231,7 +336,6 @@ def cmd_selftest(config: Config, args: argparse.Namespace) -> int:
     print("=" * 60)
     ok = True
 
-    # 1) Protocol envelope round-trip.
     try:
         env = protocol.voice_transcript("hello jarvis", 0.91, session="S")
         parsed = protocol.Envelope.from_json(env.to_json())
@@ -243,14 +347,12 @@ def cmd_selftest(config: Config, args: argparse.Namespace) -> int:
         ok = False
         print(f"[FAIL] protocol: {exc}")
 
-    # 2) Engine factories (fall back to mock/energy headless).
     pipeline = build_pipeline(config)
     print(
         f"[ok] engines selected: wake={pipeline.wake.name} "
         f"stt={pipeline.stt.name} tts={pipeline.tts.name}"
     )
 
-    # 3) Mock pipeline turn via synthetic audio frames (wake → record → STT).
     transcripts: List[TranscriptResult] = []
     wakes: List[bool] = []
     pipeline.cb = PipelineCallbacks(
@@ -260,13 +362,9 @@ def cmd_selftest(config: Config, args: argparse.Namespace) -> int:
     try:
         loud = audio.tone(300.0, config.frame_ms, sample_rate=config.sample_rate, amplitude=0.6)
         quiet = audio.silence(config.frame_ms, config.sample_rate)
-        # Enough loud frames to trip the wake (energy) + voice the utterance,
-        # then enough quiet frames to endpoint on silence.
         frames = [loud] * 8 + [quiet] * (config.frames_for_ms(config.silence_ms) + 3)
         for fr in frames:
             pipeline.process_frame(fr)
-        # With the energy fallback the wake fires; with a real wake model it may
-        # not on a synthetic tone, so drive a deterministic path too.
         if not transcripts:
             pipeline.simulate_utterance(config.mock_transcript)
         assert transcripts, "no transcript produced"
@@ -275,7 +373,6 @@ def cmd_selftest(config: Config, args: argparse.Namespace) -> int:
         ok = False
         print(f"[FAIL] pipeline: {exc}")
 
-    # 4) TTS synthesize → valid WAV.
     try:
         wav = pipeline.synthesize("Jarvis online.")
         pcm, sr, ch = audio.wav_to_pcm16(wav)
@@ -285,7 +382,6 @@ def cmd_selftest(config: Config, args: argparse.Namespace) -> int:
         ok = False
         print(f"[FAIL] tts: {exc}")
 
-    # 5) Bridge envelope mapping (hello advertises mic+speaker+ambient_audio).
     try:
         hello = protocol.client_hello(mic=True, speaker=True, ambient_audio=True)
         caps = hello.payload["capabilities"]
@@ -296,13 +392,11 @@ def cmd_selftest(config: Config, args: argparse.Namespace) -> int:
         ok = False
         print(f"[FAIL] bridge: {exc}")
 
-    # 6) Sound-event detection (heuristic fallback).
     try:
         from .sound_events import create_sound_event_detector
-
         det = create_sound_event_detector(config)
         win = audio.tone(300.0, config.sound_event_window_ms, sample_rate=config.sample_rate, amplitude=0.6)
-        sil = audio.silence(config.sound_event_window_ms, config.sample_rate)
+        sil = audio.silence(config.sound_event_window_ms, sample_rate=config.sample_rate)
         events = det.analyze(win)
         assert events, "no event on loud audio"
         assert det.analyze(sil) == [], "event on silence"
@@ -312,10 +406,8 @@ def cmd_selftest(config: Config, args: argparse.Namespace) -> int:
         ok = False
         print(f"[FAIL] sound events: {exc}")
 
-    # 7) Continuous ambient listening → audio scene.
     try:
         from .ambient import build_ambient
-
         amb = build_ambient(config)
         spcm = audio.tone(300.0, config.ambient_window_ms, sample_rate=config.sample_rate, amplitude=0.6)
         scene = amb.analyze_window(spcm)
@@ -330,23 +422,21 @@ def cmd_selftest(config: Config, args: argparse.Namespace) -> int:
         ok = False
         print(f"[FAIL] ambient: {exc}")
 
-    # 8) Barge-in interrupts TTS when the user speaks over it.
     try:
         bp = build_pipeline(config)
         fired: List[bool] = []
         bp.cb = PipelineCallbacks(on_barge_in=lambda: fired.append(True))
-        bp._speaking = True  # simulate TTS playing
+        bp._speaking = True
         loud_frame = audio.tone(300.0, config.frame_ms, sample_rate=config.sample_rate, amplitude=0.6)
         for _ in range(config.barge_in_min_frames + 2):
             bp.process_frame(loud_frame)
-        assert fired, "barge-in did not fire"
+        assert fired, "barge-in interrupts TTS on user speech"
         assert not bp.is_speaking()
         print("[ok] barge-in interrupts TTS on user speech")
     except Exception as exc:
         ok = False
         print(f"[FAIL] barge-in: {exc}")
 
-    # 9) v1.1 perception envelope build/parse.
     try:
         sc_env = protocol.audio_scene(
             "overheard chatter", "other", [{"label": "music", "confidence": 0.6}], -30.0, 4000
@@ -376,11 +466,6 @@ def cmd_selftest(config: Config, args: argparse.Namespace) -> int:
 # arg parsing
 # --------------------------------------------------------------------------- #
 def _add_common_overrides(parser: argparse.ArgumentParser, *, suppress: bool) -> None:
-    """Engine/backend overrides. Added to the root parser (with real defaults)
-    and to each subparser (with SUPPRESS) so they work either side of the
-    subcommand, e.g. both ``jarvis-voice --tts mock say hi`` and
-    ``jarvis-voice say hi --tts mock``.
-    """
     default = argparse.SUPPRESS if suppress else None
     parser.add_argument(
         "--wake", default=default, help="override JARVIS_WAKE (auto|openwakeword|porcupine|energy)"
@@ -421,6 +506,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_overrides(sp_demo, suppress=True)
     sp_demo.set_defaults(func=cmd_demo)
 
+    sp_demo_stream = sub.add_parser("demo-stream", help="local mic → wake → STT → Streaming TTS loop")
+    sp_demo_stream.add_argument("--simulate", action="store_true", help="force the typed REPL (no mic)")
+    _add_common_overrides(sp_demo_stream, suppress=True)
+    sp_demo_stream.set_defaults(func=cmd_demo_streaming)
     sp_ambient = sub.add_parser(
         "ambient", help="continuous ambient listening + sound events (mock-friendly)"
     )
@@ -445,7 +534,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_overrides(sp_say, suppress=True)
     sp_say.set_defaults(func=cmd_say)
 
-    sp_self = sub.add_parser("selftest", help="headless end-to-end check (mocks)")
+    sp_self = sub.add_parser("selftest", help="headless end-to-end check using the configured/fallback engines")
     _add_common_overrides(sp_self, suppress=True)
     sp_self.set_defaults(func=cmd_selftest)
 

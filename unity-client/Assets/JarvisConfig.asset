@@ -1,0 +1,56 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3fe07c7b6407b8c48ad7de8fc5bd9f5b, type: 3}
+  m_Name: JarvisConfig
+  m_EditorClassIdentifier: 
+  host: 192.168.1.5
+  port: 8765
+  path: /jarvis
+  audioPath: /audio
+  useTls: 0
+  appVersion: 0.1.0
+  locale: en-US
+  capPassthrough: 1
+  capHandTracking: 1
+  capControllers: 1
+  capMic: 1
+  capSpeaker: 1
+  capSceneUnderstanding: 1
+  capCameraPassthrough: 1
+  capAmbientAudio: 1
+  capEyeTracking: 0
+  capOnDeviceVision: 0
+  capDepth: 0
+  heartbeatSeconds: 5
+  autoReconnect: 1
+  reconnectInitialDelay: 1
+  reconnectMaxDelay: 30
+  reconnectBackoffMultiplier: 2
+  logTraffic: 1
+  enableMicStreaming: 1
+  micSampleRate: 16000
+  enableSceneReporting: 1
+  sceneReportInterval: 2
+  visionPath: /vision
+  visionPreferBinary: 1
+  visionDefaultFps: 2
+  visionMaxFps: 5
+  visionJpegQuality: 70
+  visionMaxResolution: 1024
+  visionCameraNameHint: passthrough
+  ambientSampleRate: 16000
+  gazeHz: 8
+  gazeDwellThresholdMs: 400
+  gazeMaxDistance: 12
+  showCaptureIndicator: 1
+  thermalFpsGuard: 1
+  perceptionStateInterval: 3
