@@ -131,9 +131,9 @@ class VoiceBridge:
         elif t == protocol.SERVER_HEARTBEAT:
             log.debug("← server.heartbeat")
         elif t == protocol.AGENT_SPEECH:
-            await self._handle_speech(env, kind="agent.speech")
+            await self._stream_speech(ws, env, kind="agent.speech")
         elif t == protocol.AGENT_OBSERVATION:
-            await self._handle_speech(env, kind="agent.observation")
+            await self._stream_speech(ws, env, kind="agent.observation")
         elif t == protocol.PERCEPTION_REQUEST:
             await self._handle_perception_request(ws, env)
         elif t == protocol.AGENT_THINKING:
@@ -146,21 +146,47 @@ class VoiceBridge:
         elif t == protocol.SERVER_ERROR:
             log.warning("← server.error: %s", env.payload)
         else:
-            # Unknown types (e.g. holo.*) are not our concern — ignore per spec.
             log.debug("ignoring %s", t)
         return env
 
-    async def _handle_speech(self, env: Envelope, kind: str = "agent.speech") -> None:
-        """Speak ``agent.speech`` or ``agent.observation`` text via TTS."""
+    async def _stream_speech(self, ws: Any, env: Envelope, kind: str = "agent.speech") -> None:
+        """Synthesize speech and stream audio chunks back to Unity."""
         text = env.text or ""
         final = bool(env.payload.get("final", True))
         log.info("← %s %r (final=%s)", kind, text, final)
         if not text:
             return
-        # TTS may block (synthesis/playback) — run it off the event loop.
+
         loop = asyncio.get_running_loop()
-        target = self.pipeline.speak if self.pipeline else self.speaker.speak
-        await loop.run_in_executor(None, target, text)
+        try:
+            # Synthesize text to WAV
+            wav_bytes = await loop.run_in_executor(None, self.speaker.synthesize, text)
+            
+            # Convert to PCM16 and chunk
+            from .audio import wav_to_pcm16
+            pcm, sr, ch = wav_to_pcm16(wav_bytes)
+            pcm_bytes = pcm.tobytes()
+            
+            # Send as small chunks (~20-40ms)
+            chunk_size = 3200 
+            for i in range(0, len(pcm_bytes), chunk_size):
+                chunk = pcm_bytes[i : i + chunk_size]
+                import base64
+                b64_audio = base64.b64encode(chunk).decode("utf-8")
+                
+                env_chunk = protocol.Envelope.build(
+                    protocol.AGENT_AUDIO_CHUNK,
+                    {"audio": b64_audio, "sr": sr, "ch": ch},
+                    session=self.session,
+                )
+                await self.send(ws, env_chunk)
+                await asyncio.sleep(0.01)
+                
+            # Debug playback on PC
+            await loop.run_in_executor(None, self.speaker.speak, text)
+        except Exception as exc:
+            log.error("Streaming speech failed: %s", exc)
+
 
     async def _handle_perception_request(self, ws: Any, env: Envelope) -> None:
         """Start/stop/snapshot the ambient_audio stream (other streams ignored)."""
@@ -227,6 +253,12 @@ class VoiceBridge:
     # --- loops --------------------------------------------------------------
     async def recv_loop(self, ws: Any) -> None:
         async for raw in ws:
+            if isinstance(raw, bytes):
+                from .audio import rms_energy
+                energy = rms_energy(raw)
+                log.info("RAW ENERGY: %.4f", energy)
+                if energy > 0.001:
+                    log.info("🔊 [AUDIO DETECTED] - Level: %.2f", energy)
             await self.handle_raw(ws, raw)
 
     async def heartbeat_loop(self, ws: Any) -> None:
@@ -316,7 +348,7 @@ class VoiceBridge:
         support = [
             asyncio.create_task(self.heartbeat_loop(ws), name="heartbeat"),
             asyncio.create_task(self.sender_loop(ws), name="sender"),
-            asyncio.create_task(self.capture_loop(ws), name="capture"),
+            # asyncio.create_task(self.capture_loop(ws), name="capture"),
         ]
         try:
             await self.recv_loop(ws)  # ends when the socket closes

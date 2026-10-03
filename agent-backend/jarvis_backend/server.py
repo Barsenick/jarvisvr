@@ -151,9 +151,9 @@ class Connection:
             log.warning("incompatible protocol version %r (we are %s)", env.v, protocol.PROTOCOL_VERSION)
 
         t = env.type
-        log.info("Received message type: %s", t)
+        log.debug("Received message type: %s", t)
         MT = protocol.MsgType
-        log.info("MT.USER_TEXT: %s, MT.USER_VOICE_TRANSCRIPT: %s", MT.USER_TEXT, MT.USER_VOICE_TRANSCRIPT)
+        log.debug("MT.USER_TEXT: %s, MT.USER_VOICE_TRANSCRIPT: %s", MT.USER_TEXT, MT.USER_VOICE_TRANSCRIPT)
 
         if t == MT.CLIENT_HELLO:
             await self._on_hello(env)

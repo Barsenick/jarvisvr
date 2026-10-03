@@ -1,7 +1,23 @@
 {
+  "scopedRegistries": [
+    {
+      "name": "Meta",
+      "url": "https://npm.developer.oculus.com",
+      "scopes": [
+        "com.meta.xr"
+      ]
+    }
+  ],
   "dependencies": {
-    "com.endel.nativewebsocket": "https://github.com/endel/NativeWebSocket.git#upm",
-    "com.meta.xr.sdk.all": "201.0.0",
+    "com.gamelovers.mcp-unity": "https://github.com/CoderGamester/mcp-unity.git",
+    "com.meta.xr.sdk.audio": "85.0.0",
+    "com.meta.xr.sdk.core": "85.0.0",
+    "com.meta.xr.sdk.haptics": "85.0.0",
+    "com.meta.xr.sdk.interaction": "85.0.0",
+    "com.meta.xr.sdk.interaction.ovr": "85.0.0",
+    "com.meta.xr.sdk.platform": "85.0.0",
+    "com.meta.xr.sdk.voice": "85.0.0",
+    "com.unity.ai.navigation": "1.1.7",
     "com.unity.inputsystem": "1.14.0",
     "com.unity.nuget.newtonsoft-json": "3.2.1",
     "com.unity.test-framework": "1.1.33",

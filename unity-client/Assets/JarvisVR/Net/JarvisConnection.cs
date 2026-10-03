@@ -29,6 +29,7 @@ namespace JarvisVR.Net
         public string SessionId { get; private set; }
         public ServerHelloAck LastHelloAck { get; private set; }
         public bool IsReady => State == ConnectionState.Connected && !string.IsNullOrEmpty(SessionId);
+        public event Action<Envelope> OnAudioChunk;
 
         /// <summary>If set, used for the hello handshake instead of config (so PerceptionController can
         /// advertise v1.1 capabilities truthfully without mutating the shared config asset).</summary>
@@ -178,6 +179,11 @@ namespace JarvisVR.Net
             catch (Exception e)
             {
                 Debug.LogException(e);
+            }
+
+            if (env.Type == "agent.audio_chunk")
+            {
+                OnAudioChunk?.Invoke(env);
             }
         }
 
@@ -331,6 +337,14 @@ namespace JarvisVR.Net
                 _ws.OnError -= HandleSocketError;
                 _ws.OnClose -= HandleClose;
                 _ws.OnMessage -= HandleRawMessage;
+            }
+        }
+
+        public async Task SendRaw(byte[] data)
+        {
+            if (_ws != null && _ws.State == WebSocketState.Open)
+            {
+                await _ws.Send(data);
             }
         }
     }

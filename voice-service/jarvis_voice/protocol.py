@@ -63,6 +63,7 @@ SERVER_ERROR = "server.error"
 # Server -> Client (v1.1 perception)
 PERCEPTION_REQUEST = "perception.request"   # start/stop/once a perception stream
 AGENT_OBSERVATION = "agent.observation"     # what Jarvis perceives (spoken via TTS)
+AGENT_AUDIO_CHUNK = "agent.audio_chunk"       # streaming audio fragment (base64 PCM16)
 
 HEARTBEAT_INTERVAL_S = 5.0
 

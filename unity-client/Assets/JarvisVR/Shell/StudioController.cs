@@ -460,10 +460,10 @@ namespace JarvisVR.Shell
         {
             _mainPanel = Panel("Main");
             Quad(_mainPanel, "bg", new Vector3(0, 0, 0.01f), new Vector3(0.86f, 0.62f, 0.008f), new Color(0.06f, 0.07f, 0.11f, 0.96f));
-            Label(_mainPanel, "title", "Studio \u00B7 Agents & Skills", 0.036f, new Color(0.7f, 0.85f, 1f), new Vector3(0, 0.26f, -0.006f), new Vector2(0.8f, 0.05f));
+            Label(_mainPanel, "title", "Studio \u00B7 Agents & Skills", 0.06f, new Color(0.7f, 0.85f, 1f), new Vector3(0, 0.26f, -0.006f), new Vector2(0.8f, 0.1f));
 
-            Label(_mainPanel, "ah", "Agents", 0.03f, new Color(0.7f, 0.8f, 1f), new Vector3(-0.21f, 0.2f, -0.006f), new Vector2(0.3f, 0.04f));
-            Label(_mainPanel, "sh", "Skills", 0.03f, new Color(0.7f, 0.8f, 1f), new Vector3(0.21f, 0.2f, -0.006f), new Vector2(0.3f, 0.04f));
+            Label(_mainPanel, "ah", "Agents", 0.05f, new Color(0.7f, 0.8f, 1f), new Vector3(-0.21f, 0.2f, -0.006f), new Vector2(0.3f, 0.08f));
+            Label(_mainPanel, "sh", "Skills", 0.05f, new Color(0.7f, 0.8f, 1f), new Vector3(0.21f, 0.2f, -0.006f), new Vector2(0.3f, 0.08f));
 
             float top = 0.14f, rh = 0.05f;
             for (int i = 0; i < ListRows; i++)
