@@ -127,6 +127,7 @@ class VoicePipeline:
             pass
         self._set_state(PipelineState.LISTENING)
         if result and result.text.strip():
+            log.info("STT Transcript: %s", result.text)
             _safe(self.cb.on_transcript, result)
         else:
             _safe(self.cb.on_utterance_empty)

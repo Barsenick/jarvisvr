@@ -125,19 +125,13 @@ class VoiceBridge:
                 if isinstance(message, bytes):
                     energy = rms_energy(message)
                     if energy > 0.01:
-                        log.info("🔊 [AUDIO DETECTED] - Level: %.2f", energy)
+                        pass
                     if self.pipeline:
                         self.pipeline.process_frame(message)
                     
                     # MOCK TRIGGER for testing end-to-end flow
                     # MOCK TRIGGER: If audio is loud, force a response
-                    now = asyncio.get_event_loop().time()
-                    if energy > 50.0 and (now - self._last_trigger_time > 5.0):
-                        self._last_trigger_time = now
-                        log.info("⚡ MOCK TRIGGER: Audio > 50.0, sending mock response")
-                        self._enqueue(protocol.voice_transcript("This is a mock response because you were loud!", 1.0, session=self.session))
-                        log.info("⚡ MOCK TRIGGER: Audio > 50.0, sending mock response")
-                        self._enqueue(protocol.voice_transcript("This is a mock response because you were loud!", 1.0, session=self.session))
+                    # MOCK TRIGGER removed to enable real wake-word and STT pipeline
                 else:
                     log.debug("Received JSON from Quest: %s", message)
         except Exception as e:

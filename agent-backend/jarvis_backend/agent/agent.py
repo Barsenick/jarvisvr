@@ -206,7 +206,20 @@ class AgentSession:
         self.session_id = session_id
         self.emit = emit
         self.state = SessionState(session_id=session_id, memory=ConversationMemory())
-        self.system_prompt = build_system_prompt(tool_names=agent.tool_names())
+        
+        # Custom Jarvis Persona for Demo Mode
+        # - Short replies
+        # - call him "sir"
+        # - Jarvis-style wit/humor
+        self.system_prompt = (
+            build_system_prompt(tool_names=agent.tool_names()) + 
+            "\n\nIMPORTANT PERSONA DIRECTIVE:\n"
+            "You are JARVIS. Your tone is sophisticated, slightly witty, and impeccably polite.\n"
+            "1. Always address the user as 'sir'.\n"
+            "2. Keep responses concise and efficient.\n"
+            "3. Use dry, British-style humor where appropriate.\n"
+            "4. You are a high-end AI assistant; be helpful but maintain a professional demeanor."
+        )
         # Barge-in (§5.14): the task running the current turn + a per-turn cancel
         # flag so we stop emitting agent.speech/agent.observation immediately.
         self._active_turn: Optional["asyncio.Task"] = None
