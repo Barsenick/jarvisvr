@@ -8362,7 +8362,6 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _monoscopic: 0
   _sharpenType: 0
-  _disableRecording: 0
   _enableDynamicResolution: 0
   minDynamicResolutionScale: 1
   maxDynamicResolutionScale: 1
@@ -8434,10 +8433,6 @@ MonoBehaviour:
   SimultaneousHandsAndControllersEnabled: 0
   _readOnlyWideMotionModeHandPosesEnabled: 0
   wideMotionModeHandPosesEnabled: 0
-  _readOnlyFastMotionModeHandPosesEnabled: 0
-  fastMotionModeHandPosesEnabled: 0
-  _readOnlyWideMotionMode2HandPosesEnabled: 0
-  wideMotionMode2HandPosesEnabled: 0
   dynamicResolutionVersion: 1
 --- !u!114 &778531443
 MonoBehaviour:
@@ -22858,7 +22853,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bd3649df018411b438aa5972fbeace11, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  connection: {fileID: 0}
+  connection: {fileID: 2129989330}
 --- !u!82 &2129989329
 AudioSource:
   m_ObjectHideFlags: 0
@@ -22967,7 +22962,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 85567969d6b64e4429d474dd46f7161c, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  config: {fileID: 0}
+  config: {fileID: 11400000, guid: c05174b98ae2ba84ebe07cab765c5a94, type: 2}
   AttachPerceptionDefault: 0
   autoConnectOnStart: 1
 --- !u!4 &2129989331

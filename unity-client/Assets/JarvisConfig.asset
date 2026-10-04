@@ -13,7 +13,7 @@ MonoBehaviour:
   m_Name: JarvisConfig
   m_EditorClassIdentifier: 
   host: 192.168.1.5
-  port: 8765
+  port: 8766
   path: /jarvis
   audioPath: /audio
   useTls: 0
